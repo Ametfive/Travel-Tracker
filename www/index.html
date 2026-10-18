@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0b7a5b">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>Leg Logger</title>
+<style>
+:root{--bg:#f6f7f9;--card:#fff;--tx:#14181f;--mu:#667085;--ac:#0b7a5b;--bd:#e3e6ea;--wa:#b54708}
+@media (prefers-color-scheme:dark){:root{--bg:#0f1317;--card:#181e25;--tx:#eef1f4;--mu:#9aa4b2;--ac:#3ecf9f;--bd:#2a323c;--wa:#fdb022}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--tx);font:15px/1.45 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;padding:calc(14px + env(safe-area-inset-top,0px)) 14px calc(14px + env(safe-area-inset-bottom,0px));max-width:560px;margin-inline:auto}
+h1{font-size:20px;margin:4px 0 12px}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:14px;padding:14px;margin-bottom:12px}
+.row{display:flex;gap:10px;flex-wrap:wrap}
+.stat{flex:1;min-width:110px}
+.stat b{display:block;font-size:24px}
+.stat span,.mu{color:var(--mu);font-size:13px}
+button{font:inherit;border:0;border-radius:10px;padding:11px 14px;background:var(--ac);color:#fff;font-weight:600}
+@media (prefers-color-scheme:dark){button:not(.s){color:#06241a}}
+button.s{background:transparent;color:var(--tx);border:1px solid var(--bd)}
+label{display:block;font-size:13px;color:var(--mu)}
+input{font:inherit;width:100%;padding:9px;border-radius:8px;border:1px solid var(--bd);background:var(--bg);color:var(--tx)}
+.leg{display:flex;justify-content:space-between;gap:8px;padding:8px 0;border-top:1px solid var(--bd)}
+.leg:first-child{border-top:0}
+.wa{color:var(--wa);font-size:13px}
+.tag{font-size:11px;padding:1px 6px;border-radius:6px;border:1px solid var(--bd);color:var(--mu)}
+svg{width:100%;height:170px;display:block}
+#st{font-weight:600}
+</style>
+</head>
+<body>
+<h1>Leg Logger</h1>
+
+<div class="card">
+  <div class="row">
+    <div class="stat"><b id="tot">0.0 km</b><span>Route distance</span></div>
+    <div class="stat"><b id="str">0.0 km</b><span>Straight-line</span></div>
+    <div class="stat"><b id="np">0</b><span>Points</span></div>
+  </div>
+  <p id="st" class="mu">Not tracking</p>
+  <div class="row">
+    <button id="go">Start tracking</button>
+    <button id="now" class="s">Log point now</button>
+    <button id="rt" class="s">Retry routing</button>
+  </div>
+  <p class="wa" id="bgnote">Tracking continues with the screen off. In Android settings, set this app's location permission to "Allow all the time".</p>
+</div>
+
+<div class="card">
+  <div class="row">
+    <div style="flex:1"><label>Log a point every (km)</label><input id="th" type="number" min="0.1" step="0.5" value="10"></div>
+    <div style="flex:1"><label>Fallback road factor</label><input id="rf" type="number" min="1" step="0.05" value="1.3"></div>
+  </div>
+  <p class="mu">Each leg is routed along roads with OSRM. If routing is unavailable (no internet), the leg uses straight-line × the factor, is tagged "est.", and is routed when you tap Retry or come back online.</p>
+</div>
+
+<div class="card"><svg id="map" viewBox="0 0 300 170" preserveAspectRatio="xMidYMid meet"></svg></div>
+<div class="card"><div id="legs" class="mu">No legs yet.</div></div>
+
+<div class="row">
+  <button class="s" id="csv">Export CSV</button>
+  <button class="s" id="clr">Clear all</button>
+</div>
+<p class="mu" id="msg"></p>
+
+<script>
+(function(){
+  var KEY="leglogger.v2", pts=[], watchId=null, wl=null, busy=false;
+  var $=function(i){return document.getElementById(i)};
+  try{var s=JSON.parse(localStorage.getItem(KEY)||"null");if(s&&s.pts)pts=s.pts;if(s&&s.th)$("th").value=s.th;if(s&&s.rf)$("rf").value=s.rf}catch(e){}
+  function save(){try{localStorage.setItem(KEY,JSON.stringify({pts:pts,th:$("th").value,rf:$("rf").value}))}catch(e){}}
+  function hav(a,b){var R=6371,r=Math.PI/180,dl=(b.lat-a.lat)*r,dn=(b.lon-a.lon)*r;
+    var x=Math.sin(dl/2)*Math.sin(dl/2)+Math.cos(a.lat*r)*Math.cos(b.lat*r)*Math.sin(dn/2)*Math.sin(dn/2);
+    return 2*R*Math.asin(Math.sqrt(x))}
+  function fmt(t){return new Date(t).toLocaleString([], {month:"short",day:"numeric",hour:"2-digit",minute:"2-digit"})}
+  function legKm(i){var rf=parseFloat($("rf").value)||1.3;return pts[i].road!=null?pts[i].road:hav(pts[i-1],pts[i])*rf}
+
+  function render(){
+    var st=0,tot=0,h="";
+    for(var i=1;i<pts.length;i++){
+      var d=hav(pts[i-1],pts[i]),r=legKm(i),ok=pts[i].road!=null;
+      st+=d;tot+=r;
+      h+='<div class="leg"><div>Leg '+i+'<br><span class="mu">'+fmt(pts[i-1].t)+' → '+fmt(pts[i].t)+'</span></div><div style="text-align:right"><b>'+r.toFixed(1)+' km</b> <span class="tag">'+(ok?"route":"est.")+'</span><br><span class="mu">'+d.toFixed(1)+' km straight</span></div></div>';
+    }
+    $("legs").innerHTML=h||"No legs yet. The first point is your start; each further point creates a leg.";
+    $("str").textContent=st.toFixed(1)+" km";
+    $("tot").textContent=tot.toFixed(1)+" km";
+    $("np").textContent=pts.length;
+    var svg=$("map");
+    if(!pts.length){svg.innerHTML="";return}
+    var la=pts.map(function(p){return p.lat}),lo=pts.map(function(p){return p.lon});
+    var mnA=Math.min.apply(0,la),mxA=Math.max.apply(0,la),mnO=Math.min.apply(0,lo),mxO=Math.max.apply(0,lo);
+    var k=Math.cos((mnA+mxA)/2*Math.PI/180),w=Math.max((mxO-mnO)*k,1e-4),hh=Math.max(mxA-mnA,1e-4),sc=Math.min(260/w,130/hh);
+    var P=pts.map(function(p){return [150+((p.lon-(mnO+mxO)/2)*k)*sc,85-(p.lat-(mnA+mxA)/2)*sc]});
+    var o='<polyline fill="none" stroke="var(--ac)" stroke-width="2" points="'+P.map(function(q){return q[0].toFixed(1)+","+q[1].toFixed(1)}).join(" ")+'"/>';
+    P.forEach(function(q,i){o+='<circle cx="'+q[0].toFixed(1)+'" cy="'+q[1].toFixed(1)+'" r="'+(i==0||i==P.length-1?5:3)+'" fill="var(--ac)"/>'});
+    svg.innerHTML=o;
+  }
+
+  // Road routing via OSRM public demo server
+  async function route(a,b){
+    var u="https://router.project-osrm.org/route/v1/driving/"+a.lon+","+a.lat+";"+b.lon+","+b.lat+"?overview=false&alternatives=false";
+    var ctl=new AbortController(),to=setTimeout(function(){ctl.abort()},15000);
+    try{
+      var r=await fetch(u,{signal:ctl.signal});
+      if(!r.ok)throw 0;
+      var j=await r.json();
+      if(j.code!=="Ok"||!j.routes||!j.routes.length)throw 0;
+      return j.routes[0].distance/1000;
+    }finally{clearTimeout(to)}
+  }
+  async function resolveAll(){
+    if(busy)return;busy=true;var fixed=0,failed=0;
+    for(var i=1;i<pts.length;i++){
+      if(pts[i].road!=null)continue;
+      try{pts[i].road=await route(pts[i-1],pts[i]);fixed++;save();render()}catch(e){failed++}
+    }
+    busy=false;
+    if(fixed||failed)$("msg").textContent=failed?(failed+" leg(s) still estimated. Retry when online."):"All legs routed.";
+  }
+
+  function add(p){
+    pts.push({lat:+p.coords.latitude.toFixed(6),lon:+p.coords.longitude.toFixed(6),t:p.timestamp||Date.now(),road:null});
+    save();render();
+    if(pts.length>1)resolveAll();
+  }
+  function onPos(p){
+    var cur={lat:p.coords.latitude,lon:p.coords.longitude};
+    if(!pts.length){add(p);$("st").textContent="Start point logged";return}
+    var d=hav(pts[pts.length-1],cur),th=parseFloat($("th").value)||10;
+    $("st").textContent="Tracking · "+d.toFixed(1)+" of "+th+" km since last point";
+    if(d>=th)add(p);
+  }
+  function onErr(e){$("st").textContent="Location error: "+e.message+(e.code==1?" (allow location for this site)":"")}
+  async function lock(){try{if(navigator.wakeLock)wl=await navigator.wakeLock.request("screen")}catch(e){}}
+
+  var BG=(window.Capacitor&&window.Capacitor.isNativePlatform&&window.Capacitor.isNativePlatform())?window.Capacitor.Plugins.BackgroundGeolocation:null;
+  if(!BG)$("bgnote").textContent="Browser mode: keep the screen on. Install the Android app for background tracking.";
+  var bgId=null;
+  function startNative(){
+    $("st").textContent="Waiting for GPS…";
+    BG.addWatcher({backgroundTitle:"Leg Logger is tracking",backgroundMessage:"Logging a point every "+($("th").value||10)+" km",requestPermissions:true,stale:false,distanceFilter:500},function(l,err){
+      if(err){$("st").textContent=err.code==="NOT_AUTHORIZED"?"Location not allowed. Enable it in app settings (Allow all the time).":"Location error: "+(err.message||err.code);return}
+      if(l)onPos({coords:{latitude:l.latitude,longitude:l.longitude},timestamp:l.time||Date.now()});
+    }).then(function(id){bgId=id;$("go").textContent="Stop tracking"});
+  }
+  $("go").onclick=function(){
+    if(BG){
+      if(bgId!==null){BG.removeWatcher({id:bgId});bgId=null;$("go").textContent="Start tracking";$("st").textContent="Stopped";return}
+      startNative();return;
+    }
+    if(watchId!==null){navigator.geolocation.clearWatch(watchId);watchId=null;if(wl){try{wl.release()}catch(e){}}$("go").textContent="Start tracking";$("st").textContent="Stopped";return}
+    if(!navigator.geolocation){$("st").textContent="Geolocation not supported";return}
+    $("st").textContent="Waiting for GPS…";
+    watchId=navigator.geolocation.watchPosition(onPos,onErr,{enableHighAccuracy:true,maximumAge:5000,timeout:30000});
+    lock();$("go").textContent="Stop tracking";
+  };
+  document.addEventListener("visibilitychange",function(){if(document.visibilityState==="visible"){if(watchId!==null)lock();resolveAll()}});
+  $("now").onclick=function(){
+    if(BG){$("st").textContent="Manual logging works while tracking is running.";return}
+    if(!navigator.geolocation)return;
+    navigator.geolocation.getCurrentPosition(function(p){add(p);$("st").textContent="Point logged manually"},onErr,{enableHighAccuracy:true,timeout:20000});
+  };
+  $("rt").onclick=function(){$("msg").textContent="Routing…";resolveAll()};
+  window.addEventListener("online",resolveAll);
+  $("th").onchange=$("rf").oninput=function(){save();render()};
+  $("csv").onclick=function(){
+    var r=["n,time,lat,lon,leg_straight_km,leg_km,leg_source"];
+    pts.forEach(function(p,i){var d=i?hav(pts[i-1],p):0;r.push([i,new Date(p.t).toISOString(),p.lat,p.lon,d.toFixed(2),i?legKm(i).toFixed(2):"0.00",i?(p.road!=null?"route":"estimate"):""].join(","))});
+    var b=new Blob([r.join("\n")],{type:"text/csv"}),a=document.createElement("a");
+    a.href=URL.createObjectURL(b);a.download="leg-log.csv";document.body.appendChild(a);a.click();a.remove();
+  };
+  $("clr").onclick=function(){if(pts.length&&!confirm("Delete all logged points?"))return;pts=[];save();render();$("msg").textContent=""};
+
+  if(!BG&&"serviceWorker" in navigator)navigator.serviceWorker.register("sw.js").catch(function(){});
+  render();resolveAll();
+})();
+</script>
+</body>
+</html>
