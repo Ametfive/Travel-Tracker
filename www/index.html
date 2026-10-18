@@ -166,12 +166,31 @@ svg{width:100%;height:170px;display:block}
   $("rt").onclick=function(){$("msg").textContent="Routing…";resolveAll()};
   window.addEventListener("online",resolveAll);
   $("th").onchange=$("rf").oninput=function(){save();render()};
-  $("csv").onclick=function(){
+  $("csv").onclick=async function(){
     var r=["n,time,lat,lon,leg_straight_km,leg_km,leg_source"];
     pts.forEach(function(p,i){var d=i?hav(pts[i-1],p):0;r.push([i,new Date(p.t).toISOString(),p.lat,p.lon,d.toFixed(2),i?legKm(i).toFixed(2):"0.00",i?(p.road!=null?"route":"estimate"):""].join(","))});
-    var b=new Blob([r.join("\n")],{type:"text/csv"}),a=document.createElement("a");
-    a.href=URL.createObjectURL(b);a.download="leg-log.csv";document.body.appendChild(a);a.click();a.remove();
+    var csv=r.join("\n");
+    if(!pts.length){$("msg").textContent="Nothing to export yet.";return}
+    var P=window.Capacitor&&window.Capacitor.Plugins;
+    if(BG&&P&&P.Filesystem&&P.Share){
+      try{
+        var f=await P.Filesystem.writeFile({path:"leg-log.csv",data:csv,directory:"CACHE",encoding:"utf8"});
+        await P.Share.share({title:"Leg log",text:"Leg Logger export",url:f.uri,dialogTitle:"Save or send CSV"});
+        $("msg").textContent="";return;
+      }catch(e){if(e&&/cancel/i.test(String(e.message||e))){return}}
+    }
+    try{
+      var bl=new Blob([csv],{type:"text/csv"}),a=document.createElement("a");
+      a.href=URL.createObjectURL(bl);a.download="leg-log.csv";document.body.appendChild(a);a.click();a.remove();
+    }catch(e){}
+    showCsv(csv);
   };
+  function showCsv(csv){
+    var t=$("csvbox");
+    if(!t){t=document.createElement("textarea");t.id="csvbox";t.style.cssText="width:100%;height:160px;margin-top:8px;font:12px monospace;background:var(--bg);color:var(--tx);border:1px solid var(--bd);border-radius:8px";$("msg").after(t)}
+    t.value=csv;t.focus();t.select();
+    try{document.execCommand("copy");$("msg").textContent="CSV copied to clipboard. It is also shown below."}catch(e){$("msg").textContent="Select the text below and copy it."}
+  }
   $("clr").onclick=function(){if(pts.length&&!confirm("Delete all logged points?"))return;pts=[];save();render();$("msg").textContent=""};
 
   if(!BG&&"serviceWorker" in navigator)navigator.serviceWorker.register("sw.js").catch(function(){});
